@@ -1,1 +1,55 @@
-MDP Specification: Autonomous Orbital StabilizationTarget Environment: 2D Planar Low Earth Orbit (LEO)Spacecraft: 1U CubeSat (10 cm x 10 cm x 10 cm)Target Altitude: 400 kmOverviewThe orbital control task is formulated as a Markov Decision Process (MDP) defined by the tuple $(S, A, T, R, \gamma)$. The agent interacts with the environment at discrete control steps, observing the current state $s \in S$, selecting a continuous action $a \in A$ according to policy $\pi$, transitioning to state $s'$ via the environment's dynamics $T$, and receiving a composite reward $R_t$.1. State Space ($S$)The state vector represents the environment variables the PPO agent observes at each time step. To ensure stable neural network backpropagation, all variables are scaled to a normalized $[-1, 1]$ range using the following physical bounds before being passed to the agent.A. Position ($r$)Target Radius ($r_{target}$): $6,771,000 \text{ m}$ (Earth's radius $6,371 \text{ km} + 400 \text{ km}$ altitude)Failure Threshold ($d_{max}$): $\pm 50,000 \text{ m}$Minimum Bound ($r_{min}$): $6,721,000 \text{ m}$ (Below this threshold, the episode terminates as a failure due to rapid atmospheric decay)Maximum Bound ($r_{max}$): $6,821,000 \text{ m}$ (Above this threshold, the episode terminates as a failure for leaving the operational constellation slot)B. Velocity ($v$)Target Velocity ($v_{target}$): $7,672 \text{ m/s}$ (Ideal circular velocity at 400 km altitude)Minimum Bound ($v_{min}$): $7,500 \text{ m/s}$Maximum Bound ($v_{max}$): $7,800 \text{ m/s}$Note: Velocity deviation from the target ($v_t - v_{target}$) is also tracked for stability calculations.C. Propellant Mass ($m$)Maximum Bound ($m_{max}$): $1.0 \text{ kg}$ (Full tank capacity)Minimum Bound ($m_{min}$): $0.0 \text{ kg}$ (Empty tank; no further thrust actions permitted)2. Action Space ($A$)The action space consists of continuous, un-discretized commands sent to the thruster system. The RL agent outputs values in the range $[-1, 1]$, which the Gym environment maps to physical outputs.A. Thrust Magnitude ($T_{mag}$)Simulated Hardware Constraint: $10 \text{ mN}$ maximum thrust (Representative of micro-propulsion systems suitable for a 1U CubeSat)Agent Output: $[-1, 1]$Physical Mapping: $0.0 \text{ mN}$ to $10.0 \text{ mN}$ (Agent outputs $\le 0$ result in no thrust; outputs $> 0$ scale linearly to maximum thrust)B. Thrust Angle ($\theta$)Simulated Hardware Constraint: $360^\circ$ planar vectoringAgent Output: $[-1, 1]$Physical Mapping: $-\pi$ to $+\pi$ radians (Relative to the satellite's current velocity vector)3. Transition Function ($T$)The transition function $T(s, a, s')$ is computed by the custom OpenAI Gym environment. It models two-dimensional planar motion using discretised two-body equations.The physics engine updates the state vector at each control step by calculating:Keplerian Dynamics: Standard inverse-square gravity mapping the unperturbed orbit.Atmospheric Drag: An exponential density profile pulling the satellite back toward Earth, functioning as the primary continuous perturbation.Stochastic Perturbations: Randomly injected micro-forces simulating unmodelled disturbances (e.g., solar radiation pressure fluctuations).Mass Depletion: The reduction of propellant mass corresponding to the action's thrust magnitude and duration, modelled via the Tsiolkovsky rocket equation.4. Reward Function ($R$)The reward function is a normalized, multi-objective composite score designed to balance mission requirements. It is computed at every step $t$.All individual reward terms are normalized to a $[-1, 0]$ scale to prevent large numerical values (like orbital distance) from drowning out smaller values (like fuel consumption) during gradient descent.The Normalization Equations:Orbital Tracking: $\hat{R}_{orbit} = -||r_t - r_{target}||^2 / d_{max}^2$Fuel Efficiency: $\hat{R}_{fuel} = -\Delta m_t / \Delta m_{max}$Velocity Stability: $\hat{R}_{stability} = -||v_t - v_{target}||^2 / v_{max}^2$Penalty Rescaling: $\hat{R}_{penalty} = \text{Terminal failure penalty divided by } 100$The Final Composite Reward Equation:$$R_t = 0.5 \cdot \hat{R}_{orbit} + 0.3 \cdot \hat{R}_{fuel} + 0.15 \cdot \hat{R}_{stability} + 0.05 \cdot \hat{R}_{penalty}$$Episode Success: The agent maintains the orbit within the $\pm 50,000 \text{ m}$ tolerance for the duration of the maximum episode steps.Episode Failure: The agent breaches the $d_{max}$ boundary, triggering the $-1.0$ $\hat{R}_{penalty}$ and immediately terminating the episode.5. Discount Factor ($\gamma$)The discount factor balances immediate rewards against long-term mission success.Value: $\gamma = 0.99$Rationale: Orbital mechanics is inherently a long-term planning problem. A high discount factor ensures the PPO agent prioritizes maintaining stable orbit hours in the future, rather than burning all its fuel to correct a minor deviation in the current second.
+MDP Specification: Autonomous 6-DOF Orbital Stabilization
+Target Environment: 3D Low Earth Orbit (LEO) with Full Attitude Dynamics
+Spacecraft: 1U CubeSat (10 cm x 10 cm x 10 cm)
+Target Altitude: 400 km
+
+## Overview
+The orbital control task is formulated as a Partially Observable Markov Decision Process (POMDP). The agent interacts with the environment at discrete control steps, observing a noisy state estimate $\hat{s} \in S$, selecting a continuous continuous action $a \in A$ according to policy $\pi$, transitioning via a high-fidelity 3D RK4 physics engine, and receiving a composite reward $R_t$.
+
+## 1. State Space ($S$)
+The state vector is a 15-dimensional array. All variables are normalized to a $[-1, 1]$ range before being passed to the agent. Gaussian noise ($\sigma=0.005$) is added to simulate sensor inaccuracies.
+
+**A. Translation (Position and Velocity)**
+- $r_x, r_y, r_z$: 3D Position vector (normalized by 7,000 km)
+- $v_x, v_y, v_z$: 3D Velocity vector (normalized by 8,000 m/s)
+- Target: Maintain an orbital radius of $r_{target} = 6,771,000 \text{ m}$ and velocity of $v_{target} = 7,672 \text{ m/s}$.
+
+**B. Attitude (Orientation and Rotation)**
+- $q_0, q_1, q_2, q_3$: Attitude quaternion (naturally bound between $[-1, 1]$)
+- $\omega_x, \omega_y, \omega_z$: Angular velocity vector (normalized by 0.1 rad/s)
+
+**C. Subsystems (Mass and Power)**
+- $m$: Propellant Mass (0.0 to 1.0 kg)
+- $b$: Battery Charge (0.0 to 10.0 Wh). Drains at -1.0W base load, charges at +4.0W net in sunlight.
+
+## 2. Action Space ($A$)
+The action space consists of 4 continuous commands in the range $[-1, 1]$.
+
+**A. Thrust Magnitude**
+- $T_{mag}$: Outputs $>0$ scale linearly to a maximum of $10 \text{ mN}$. Thrust is applied along the body's local +Z axis, meaning the agent must rotate the spacecraft to point the thruster.
+
+**B. Attitude Torques**
+- $\tau_x, \tau_y, \tau_z$: 3-axis torques (e.g., from reaction wheels) scaled to a maximum of $10^{-4} \text{ Nm}$.
+
+## 3. Transition Function ($T$)
+The environment uses a 4th-order Runge-Kutta (RK4) integrator over 60-second steps.
+- **Gravity:** Includes Earth's central body gravity and $J_2$ oblateness perturbations.
+- **Aerodynamics:** Dynamic exponential atmospheric drag based on altitude.
+- **Power:** Cylindrical shadow model determines eclipse phases (sunlight vs Earth's shadow).
+- **Randomization:** Each episode initializes with random altitude offsets, velocity offsets, orbital angles, and initial tumbling rates.
+
+## 4. Reward Function ($R$)
+The reward function balances mission requirements at every step $t$.
+
+**Components:**
+1. **Orbital Tracking ($\hat{R}_{orbit}$):** Huber loss for distance from $r_{target}$ (transitioning from quadratic to linear error for stability).
+2. **Fuel Efficiency ($\hat{R}_{fuel}$):** Linear penalty for thrust usage.
+3. **Velocity Stability ($\hat{R}_{stability}$):** Linear penalty for deviation from circular velocity.
+4. **Survival Bonus:** A constant $+0.01$ per step to encourage maintaining stable orbits and not depleting battery/fuel.
+5. **Terminal Penalty ($\hat{R}_{penalty}$):** A $-1.0$ penalty if the satellite drops below $r_{min}$, goes above $r_{max}$, depletes its fuel, or depletes its battery.
+
+$$R_t = 0.5 \cdot \hat{R}_{orbit} + 0.3 \cdot \hat{R}_{fuel} + 0.15 \cdot \hat{R}_{stability} + 0.05 \cdot \hat{R}_{penalty} + \text{Bonus}$$
+
+## 5. Discount Factor ($\gamma$)
+Value: $\gamma = 0.99$
+Rationale: Prioritizes long-term mission survival and stability over immediate corrections.

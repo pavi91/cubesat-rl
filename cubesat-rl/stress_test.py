@@ -7,7 +7,7 @@ def run_evaluation(env, agent=None, controller=None, steps=2000):
     obs, info = env.reset()
     
     total_reward = 0
-    starting_fuel = env.state['m']
+    starting_fuel = env.state_dict['m']
     
     for _ in range(steps):
         if agent:
@@ -15,7 +15,7 @@ def run_evaluation(env, agent=None, controller=None, steps=2000):
             action, _states = agent.predict(obs, deterministic=True)
         else:
             # Classical PID Decision
-            action = controller.get_action(env.state)
+            action = controller.get_action(env.state_dict)
             
         obs, reward, terminated, truncated, info = env.step(action)
         total_reward += reward
@@ -23,8 +23,8 @@ def run_evaluation(env, agent=None, controller=None, steps=2000):
         if terminated or truncated:
             break
             
-    fuel_consumed = starting_fuel - env.state['m']
-    final_alt_km = (env.state['r'] - 6371000) / 1000
+    fuel_consumed = starting_fuel - env.state_dict['m']
+    final_alt_km = (env.state_dict['r'] - 6371000) / 1000
     
     return total_reward, fuel_consumed, final_alt_km
 
