@@ -1,13 +1,17 @@
-const express = require('express');
-const http = require('http');
+const express  = require('express');
+const http     = require('http');
 const { Server } = require('socket.io');
-const cors = require('cors');
+const cors     = require('cors');
 const { spawn } = require('child_process');
-const path = require('path');
+const path     = require('path');
 
-const app = express();
+const { requireAuth } = require('./middleware/auth');
+const authRoutes     = require('./routes/auth');
+const missionRoutes  = require('./routes/missions');
+
+const app    = express();
 const server = http.createServer(app);
-const io = new Server(server, {
+const io     = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] }
 });
 
@@ -16,47 +20,37 @@ app.use(express.json());
 
 // Root of the Python project (two levels up from web/backend/)
 const PYTHON_ROOT = path.resolve(__dirname, '..', '..');
-const PYTHON_BIN = path.join(PYTHON_ROOT, 'venv', 'bin', 'python');
+const PYTHON_BIN  = path.join(PYTHON_ROOT, 'venv', 'bin', 'python');
 
-// ─── Helper: run a Python script and return parsed JSON output ────────────────
-function runPython(args, onStdout, onDone, onError) {
-  const proc = spawn(PYTHON_BIN, args, { cwd: PYTHON_ROOT });
-  let outBuf = '';
-  let errBuf = '';
-  proc.stdout.on('data', (d) => {
-    outBuf += d.toString();
-    if (onStdout) onStdout(d.toString());
+// ─── Shared helper: spawn Python and collect output ───────────────────────────
+function spawnPython(args, cwd = PYTHON_ROOT) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(PYTHON_BIN, args, { cwd });
+    let out = '', err = '';
+    proc.stdout.on('data', d => { out += d; });
+    proc.stderr.on('data', d => { err += d; });
+    proc.on('close', code => code !== 0 ? reject(new Error(err)) : resolve(out));
   });
-  proc.stderr.on('data', (d) => { errBuf += d.toString(); });
-  proc.on('close', (code) => {
-    if (code !== 0) return onError(errBuf || 'Python script failed');
-    onDone(outBuf);
-  });
-  return proc;
 }
 
-// Helper: spawn query_db.py and pipe result straight to res
 function queryDB(res, args) {
   const script = path.join(PYTHON_ROOT, 'api', 'query_db.py');
-  runPython(
-    [script, ...args],
-    null,
-    (out) => {
+  spawnPython([script, ...args])
+    .then(out => {
       const lines = out.trim().split('\n').filter(Boolean);
-      const last = lines[lines.length - 1];
-      try {
-        const result = JSON.parse(last);
-        if (!result.ok) return res.status(404).json(result);
-        res.json(result);
-      } catch (e) {
-        res.status(500).json({ error: 'Failed to parse DB output', raw: last });
-      }
-    },
-    (err) => res.status(500).json({ error: err }),
-  );
+      const last  = lines[lines.length - 1];
+      const result = JSON.parse(last);
+      if (!result.ok) return res.status(404).json(result);
+      res.json(result);
+    })
+    .catch(err => res.status(500).json({ error: err.message }));
 }
 
-// ─── REST: Health + Model Info ───────────────────────────────────────────────
+// ─── Mounted routes ───────────────────────────────────────────────────────────
+app.use('/api/auth',     authRoutes);
+app.use('/api/missions', missionRoutes);
+
+// ─── REST: Health + Model Info ────────────────────────────────────────────────
 app.get('/api/status', (req, res) => {
   res.json({
     status: 'ok',
@@ -69,85 +63,87 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-// ─── REST: Run full comparison (blocking, ~30 seconds) ───────────────────────
-app.post('/api/compare', (req, res) => {
-  const steps = req.body.steps || 200;
-  const seed = req.body.seed || 42;
+// ─── REST: Run full comparison ────────────────────────────────────────────────
+app.post('/api/compare', requireAuth, (req, res) => {
+  const steps            = req.body.steps            || 200;
+  const seed             = req.body.seed             || 42;
+  const missionProfileId = req.body.mission_profile_id || null;
 
-  const script = path.join(PYTHON_ROOT, 'api', 'run_comparison.py');
-  const proc = spawn(PYTHON_BIN, [script, '--steps', steps, '--seed', seed], {
-    cwd: PYTHON_ROOT,
-  });
+  const scriptArgs = [
+    path.join(PYTHON_ROOT, 'api', 'run_comparison.py'),
+    '--steps', steps,
+    '--seed',  seed,
+    '--user_id', String(req.user.id),
+  ];
+  if (missionProfileId) scriptArgs.push('--mission_profile_id', String(missionProfileId));
+
+  const proc = spawn(PYTHON_BIN, scriptArgs, { cwd: PYTHON_ROOT });
 
   let outputBuffer = '';
-  let errorBuffer = '';
+  let errorBuffer  = '';
+  proc.stdout.on('data', d => { outputBuffer += d.toString(); });
+  proc.stderr.on('data', d => { errorBuffer  += d.toString(); });
 
-  proc.stdout.on('data', (data) => { outputBuffer += data.toString(); });
-  proc.stderr.on('data', (data) => { errorBuffer += data.toString(); });
-
-  proc.on('close', (code) => {
-    if (code !== 0) {
-      return res.status(500).json({ error: errorBuffer || 'Python script failed' });
-    }
-    // Find the "done" status line (last non-saved JSON)
+  proc.on('close', code => {
+    if (code !== 0) return res.status(500).json({ error: errorBuffer || 'Python script failed' });
     const lines = outputBuffer.trim().split('\n').filter(Boolean);
     const doneLine = [...lines].reverse().find(l => {
       try { return JSON.parse(l).status === 'done'; } catch { return false; }
     });
     const lastLine = doneLine || lines[lines.length - 1];
     try {
-      const result = JSON.parse(lastLine);
-      res.json(result);
+      res.json(JSON.parse(lastLine));
     } catch (e) {
       res.status(500).json({ error: 'Failed to parse Python output', raw: lastLine });
     }
   });
 });
 
-// ─── REST: History — Simulations ─────────────────────────────────────────────
+// ─── REST: History — Simulations ──────────────────────────────────────────────
 app.get('/api/history/simulations', (req, res) => {
-  const limit = parseInt(req.query.limit) || 50;
-  queryDB(res, ['--action', 'list_simulations', '--limit', String(limit)]);
+  const limit  = parseInt(req.query.limit) || 50;
+  // Optional: filter by current user if ?mine=1
+  const args = ['--action', 'list_simulations', '--limit', String(limit)];
+  queryDB(res, args);
 });
 
 app.get('/api/history/simulations/:id', (req, res) => {
   queryDB(res, ['--action', 'get_simulation', '--id', req.params.id]);
 });
 
-app.delete('/api/history/simulations/:id', (req, res) => {
+app.delete('/api/history/simulations/:id', requireAuth, (req, res) => {
   queryDB(res, ['--action', 'delete_simulation', '--id', req.params.id]);
 });
 
-// ─── REST: History — Comparisons ─────────────────────────────────────────────
+// ─── REST: History — Comparisons ──────────────────────────────────────────────
 app.get('/api/history/comparisons', (req, res) => {
   const limit = parseInt(req.query.limit) || 50;
   queryDB(res, ['--action', 'list_comparisons', '--limit', String(limit)]);
 });
 
-// ─── WebSocket: Live step-by-step simulation streaming ───────────────────────
-io.on('connection', (socket) => {
+// ─── WebSocket: Live step-by-step simulation streaming ────────────────────────
+io.on('connection', socket => {
   console.log(`Client connected: ${socket.id}`);
   let currentProcess = null;
 
-  socket.on('start_simulation', ({ controller = 'ppo', steps = 200 }) => {
-    // Kill any existing simulation for this socket
-    if (currentProcess) {
-      currentProcess.kill();
-      currentProcess = null;
-    }
+  socket.on('start_simulation', ({ controller = 'ppo', steps = 200, missionProfileId, userId }) => {
+    if (currentProcess) { currentProcess.kill(); currentProcess = null; }
 
-    const script = path.join(PYTHON_ROOT, 'api', 'run_simulation.py');
-    currentProcess = spawn(PYTHON_BIN, [script, '--controller', controller, '--steps', steps], {
-      cwd: PYTHON_ROOT,
-    });
+    const scriptArgs = [
+      path.join(PYTHON_ROOT, 'api', 'run_simulation.py'),
+      '--controller', controller,
+      '--steps',      steps,
+    ];
+    if (missionProfileId) scriptArgs.push('--mission_profile_id', String(missionProfileId));
+    if (userId)           scriptArgs.push('--user_id',            String(userId));
+
+    currentProcess = spawn(PYTHON_BIN, scriptArgs, { cwd: PYTHON_ROOT });
 
     let lineBuffer = '';
-
-    currentProcess.stdout.on('data', (data) => {
+    currentProcess.stdout.on('data', data => {
       lineBuffer += data.toString();
       const lines = lineBuffer.split('\n');
-      lineBuffer = lines.pop(); // keep incomplete line in buffer
-
+      lineBuffer  = lines.pop();
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
@@ -157,8 +153,7 @@ io.on('connection', (socket) => {
       }
     });
 
-    currentProcess.stderr.on('data', (data) => {
-      // Suppress Python warnings but log critical errors
+    currentProcess.stderr.on('data', data => {
       const msg = data.toString();
       if (msg.includes('Error') || msg.includes('Traceback')) {
         socket.emit('simulation_error', { message: msg });
@@ -172,18 +167,12 @@ io.on('connection', (socket) => {
   });
 
   socket.on('stop_simulation', () => {
-    if (currentProcess) {
-      currentProcess.kill();
-      currentProcess = null;
-      socket.emit('simulation_stopped');
-    }
+    if (currentProcess) { currentProcess.kill(); currentProcess = null; }
+    socket.emit('simulation_stopped');
   });
 
   socket.on('disconnect', () => {
-    if (currentProcess) {
-      currentProcess.kill();
-      currentProcess = null;
-    }
+    if (currentProcess) { currentProcess.kill(); currentProcess = null; }
     console.log(`Client disconnected: ${socket.id}`);
   });
 });
