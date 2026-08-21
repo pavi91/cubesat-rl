@@ -12,7 +12,9 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from db import save_comparison
+from db import save_comparison, get_mission_profile
+from api.recommend import generate_recommendation
+from verify import MissionVerificationService
 
 from simulation.cubesat_env import CubeSatEnv
 from baselines.pid_controller import PDController
@@ -75,8 +77,10 @@ def run_trajectory(controller_type: str, steps: int, seed: int = 42):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--steps', type=int, default=200)
-    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--steps',              type=int, default=200)
+    parser.add_argument('--seed',               type=int, default=42)
+    parser.add_argument('--user_id',            type=int, default=None)
+    parser.add_argument('--mission_profile_id', type=int, default=None)
     args = parser.parse_args()
 
     print(json.dumps({"status": "loading", "message": "Loading models..."}), flush=True)
@@ -84,14 +88,24 @@ if __name__ == '__main__':
     ppo_result = run_trajectory('ppo', args.steps, args.seed)
     pid_result = run_trajectory('pid', args.steps, args.seed)
 
-    output = {
-        "status": "done",
-        "steps": args.steps,
-        "ppo": ppo_result,
-        "pid": pid_result,
-    }
-    print(json.dumps(output), flush=True)
+    mission_profile = {}
+    if args.mission_profile_id:
+        mission_profile = get_mission_profile(args.mission_profile_id) or {}
 
+    # Run verification against requirements
+    ppo_verify = MissionVerificationService.verify(mission_profile, ppo_result)
+    pid_verify = MissionVerificationService.verify(mission_profile, pid_result)
+
+    # Generate recommendation based on verification metrics
+    recommendation = generate_recommendation(ppo_verify, pid_verify)
+
+    # Combine verification results for the DB
+    verification_results = [
+        {"controller": "ppo", "verify": ppo_verify},
+        {"controller": "pid", "verify": pid_verify}
+    ]
+
+    cmp_id = None
     # ── Persist to SQLite ────────────────────────────────────────────────────
     try:
         cmp_id = save_comparison(
@@ -99,7 +113,23 @@ if __name__ == '__main__':
             seed=args.seed,
             ppo=ppo_result,
             pid=pid_result,
+            user_id=args.user_id,
+            mission_profile_id=args.mission_profile_id,
+            recommendation=recommendation,
+            verification_results=verification_results,
         )
-        print(json.dumps({"status": "saved", "cmp_id": cmp_id}), flush=True)
     except Exception as _db_err:
         print(json.dumps({"status": "db_warn", "message": str(_db_err)}), flush=True)
+
+    output = {
+        "status": "done",
+        "cmp_id": cmp_id,
+        "steps": args.steps,
+        "ppo": ppo_result,
+        "pid": pid_result,
+        "ppo_verify": ppo_verify,
+        "pid_verify": pid_verify,
+        "recommendation": recommendation,
+    }
+    print(json.dumps(output), flush=True)
+

@@ -65,8 +65,12 @@ def main():
     p.add_argument('--description',   default='')
     p.add_argument('--target_alt_km', type=float, default=450.0)
     p.add_argument('--min_alt_km',    type=float, default=400.0)
+    p.add_argument('--altitude_tolerance_km', type=float, default=10.0)
     p.add_argument('--fuel_budget_kg',type=float, default=1.0)
+    p.add_argument('--max_fuel_consumption_kg', type=float, default=0.5)
     p.add_argument('--power_budget_wh',type=float,default=10.0)
+    p.add_argument('--max_rms_altitude_error_km', type=float, default=5.0)
+    p.add_argument('--min_time_in_tolerance_percent', type=float, default=95.0)
     p.add_argument('--steps',         type=int,   default=200)
     p.add_argument('--is_public',     default='0')
     p.add_argument('--fields',        default='{}')  # JSON string for update
@@ -108,10 +112,14 @@ def main():
                 description=args.description,
                 target_alt_km=args.target_alt_km,
                 min_alt_km=args.min_alt_km,
+                altitude_tolerance_km=args.altitude_tolerance_km,
                 fuel_budget_kg=args.fuel_budget_kg,
+                max_fuel_consumption_kg=args.max_fuel_consumption_kg,
                 power_budget_wh=args.power_budget_wh,
+                max_rms_altitude_error_km=args.max_rms_altitude_error_km,
+                min_time_in_tolerance_percent=args.min_time_in_tolerance_percent,
                 steps=args.steps,
-                is_public=args.is_public == '1',
+                is_public=bool(int(args.is_public)),
             )
             print(json.dumps({'ok': True, 'data': {'id': mid}}))
 

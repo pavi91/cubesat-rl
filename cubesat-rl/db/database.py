@@ -42,13 +42,17 @@ CREATE TABLE IF NOT EXISTS mission_profiles (
     user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name            TEXT    NOT NULL,
     description     TEXT,
-    target_alt_km   REAL    NOT NULL DEFAULT 450.0,
-    min_alt_km      REAL    NOT NULL DEFAULT 400.0,
-    fuel_budget_kg  REAL    NOT NULL DEFAULT 1.0,
-    power_budget_wh REAL    NOT NULL DEFAULT 10.0,
-    steps           INTEGER NOT NULL DEFAULT 200,
-    is_public       INTEGER NOT NULL DEFAULT 0,
-    created_at      TEXT    NOT NULL
+    target_alt_km                 REAL    NOT NULL DEFAULT 450.0,
+    min_alt_km                    REAL    NOT NULL DEFAULT 400.0,
+    altitude_tolerance_km         REAL    NOT NULL DEFAULT 10.0,
+    fuel_budget_kg                REAL    NOT NULL DEFAULT 1.0,
+    max_fuel_consumption_kg       REAL    NOT NULL DEFAULT 0.5,
+    power_budget_wh               REAL    NOT NULL DEFAULT 10.0,
+    max_rms_altitude_error_km     REAL    NOT NULL DEFAULT 5.0,
+    min_time_in_tolerance_percent REAL    NOT NULL DEFAULT 95.0,
+    steps                         INTEGER NOT NULL DEFAULT 200,
+    is_public                     INTEGER NOT NULL DEFAULT 0,
+    created_at                    TEXT    NOT NULL
 );
 
 -- One row per simulation run
@@ -102,6 +106,7 @@ CREATE TABLE IF NOT EXISTS comparisons (
     ppo_steps           INTEGER,
     pid_steps           INTEGER,
     recommendation      TEXT,    -- JSON: {winner, confidence, summary, criteria_scores, warnings}
+    verification_results TEXT,   -- JSON array containing pass/fail requirements mapping
     ppo_trajectory      TEXT,
     pid_trajectory      TEXT,
     created_at          TEXT    NOT NULL
@@ -134,9 +139,53 @@ CREATE TABLE IF NOT EXISTS training_runs (
 
 
 def init_db(path: str = DEFAULT_DB_PATH) -> None:
-    """Create the DB file and all tables if they don't already exist."""
+    """Create the DB file and all tables, then apply any pending column migrations."""
     with _connect(path) as conn:
         conn.executescript(_DDL)
+        _run_migrations(conn)
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """
+    Idempotent column migrations.
+    SQLite doesn't support IF NOT EXISTS on ALTER TABLE, so we check
+    existing columns first and only add what's missing.
+    """
+    def columns(table):
+        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+    # simulations — add alerts_triggered if missing
+    if 'alerts_triggered' not in columns('simulations'):
+        conn.execute("ALTER TABLE simulations ADD COLUMN alerts_triggered TEXT")
+
+    # simulations — add user_id / mission_profile_id if missing
+    if 'user_id' not in columns('simulations'):
+        conn.execute("ALTER TABLE simulations ADD COLUMN user_id INTEGER REFERENCES users(id)")
+    if 'mission_profile_id' not in columns('simulations'):
+        conn.execute("ALTER TABLE simulations ADD COLUMN mission_profile_id INTEGER REFERENCES mission_profiles(id)")
+
+    # comparisons — add user_id / mission_profile_id / recommendation if missing
+    if 'user_id' not in columns('comparisons'):
+        conn.execute("ALTER TABLE comparisons ADD COLUMN user_id INTEGER REFERENCES users(id)")
+    if 'mission_profile_id' not in columns('comparisons'):
+        conn.execute("ALTER TABLE comparisons ADD COLUMN mission_profile_id INTEGER REFERENCES mission_profiles(id)")
+    if 'recommendation' not in columns('comparisons'):
+        conn.execute("ALTER TABLE comparisons ADD COLUMN recommendation TEXT")
+    if 'verification_results' not in columns('comparisons'):
+        conn.execute("ALTER TABLE comparisons ADD COLUMN verification_results TEXT")
+
+    # mission_profiles — add verification fields if missing
+    mp_cols = columns('mission_profiles')
+    if 'altitude_tolerance_km' not in mp_cols:
+        conn.execute("ALTER TABLE mission_profiles ADD COLUMN altitude_tolerance_km REAL NOT NULL DEFAULT 10.0")
+    if 'max_fuel_consumption_kg' not in mp_cols:
+        conn.execute("ALTER TABLE mission_profiles ADD COLUMN max_fuel_consumption_kg REAL NOT NULL DEFAULT 0.5")
+    if 'max_rms_altitude_error_km' not in mp_cols:
+        conn.execute("ALTER TABLE mission_profiles ADD COLUMN max_rms_altitude_error_km REAL NOT NULL DEFAULT 5.0")
+    if 'min_time_in_tolerance_percent' not in mp_cols:
+        conn.execute("ALTER TABLE mission_profiles ADD COLUMN min_time_in_tolerance_percent REAL NOT NULL DEFAULT 95.0")
+
+    conn.commit()
 
 
 # ── Users ─────────────────────────────────────────────────────────────────────
@@ -178,7 +227,11 @@ def get_user_by_username(username: str, db_path: str = DEFAULT_DB_PATH) -> Optio
 
 def create_mission_profile(*, user_id: int, name: str, description: str = '',
                             target_alt_km: float = 450.0, min_alt_km: float = 400.0,
-                            fuel_budget_kg: float = 1.0, power_budget_wh: float = 10.0,
+                            altitude_tolerance_km: float = 10.0,
+                            fuel_budget_kg: float = 1.0, max_fuel_consumption_kg: float = 0.5,
+                            power_budget_wh: float = 10.0,
+                            max_rms_altitude_error_km: float = 5.0,
+                            min_time_in_tolerance_percent: float = 95.0,
                             steps: int = 200, is_public: bool = False,
                             db_path: str = DEFAULT_DB_PATH) -> int:
     init_db(db_path)
@@ -187,10 +240,14 @@ def create_mission_profile(*, user_id: int, name: str, description: str = '',
         cur = conn.execute(
             """INSERT INTO mission_profiles
                (user_id, name, description, target_alt_km, min_alt_km,
-                fuel_budget_kg, power_budget_wh, steps, is_public, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                altitude_tolerance_km, fuel_budget_kg, max_fuel_consumption_kg,
+                power_budget_wh, max_rms_altitude_error_km, min_time_in_tolerance_percent,
+                steps, is_public, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (user_id, name, description, target_alt_km, min_alt_km,
-             fuel_budget_kg, power_budget_wh, steps, int(is_public), now),
+             altitude_tolerance_km, fuel_budget_kg, max_fuel_consumption_kg,
+             power_budget_wh, max_rms_altitude_error_km, min_time_in_tolerance_percent,
+             steps, int(is_public), now),
         )
     return cur.lastrowid
 
@@ -223,7 +280,9 @@ def get_mission_profile(profile_id: int, db_path: str = DEFAULT_DB_PATH) -> Opti
 def update_mission_profile(profile_id: int, user_id: int, fields: dict,
                             db_path: str = DEFAULT_DB_PATH) -> bool:
     allowed = {'name', 'description', 'target_alt_km', 'min_alt_km',
-               'fuel_budget_kg', 'power_budget_wh', 'steps', 'is_public'}
+               'altitude_tolerance_km', 'fuel_budget_kg', 'max_fuel_consumption_kg',
+               'power_budget_wh', 'max_rms_altitude_error_km',
+               'min_time_in_tolerance_percent', 'steps', 'is_public'}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return False
@@ -355,6 +414,7 @@ def save_comparison(*, steps_requested: int, seed: int, ppo: dict, pid: dict,
                     user_id: Optional[int] = None,
                     mission_profile_id: Optional[int] = None,
                     recommendation: Optional[dict] = None,
+                    verification_results: Optional[list] = None,
                     db_path: str = DEFAULT_DB_PATH) -> int:
     init_db(db_path)
     now = datetime.now(timezone.utc).isoformat()
@@ -365,14 +425,15 @@ def save_comparison(*, steps_requested: int, seed: int, ppo: dict, pid: dict,
                (user_id, mission_profile_id, steps_requested, seed,
                 ppo_reward, pid_reward, ppo_fuel, pid_fuel,
                 ppo_final_alt, pid_final_alt, ppo_steps, pid_steps,
-                recommendation, ppo_trajectory, pid_trajectory, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                recommendation, verification_results, ppo_trajectory, pid_trajectory, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (user_id, mission_profile_id, steps_requested, seed,
              ps["total_reward"], ks["total_reward"],
              ps["fuel_consumed"], ks["fuel_consumed"],
              ps["final_alt_km"], ks["final_alt_km"],
              ps["steps_survived"], ks["steps_survived"],
-             json.dumps(recommendation or {}),
+             json.dumps(recommendation) if recommendation else None,
+             json.dumps(verification_results) if verification_results else None,
              json.dumps(ppo["trajectory"]), json.dumps(pid["trajectory"]),
              now),
         )

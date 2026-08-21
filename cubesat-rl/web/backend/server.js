@@ -8,6 +8,7 @@ const path     = require('path');
 const { requireAuth } = require('./middleware/auth');
 const authRoutes     = require('./routes/auth');
 const missionRoutes  = require('./routes/missions');
+const reportsRoutes  = require('./routes/reports');
 
 const app    = express();
 const server = http.createServer(app);
@@ -49,6 +50,7 @@ function queryDB(res, args) {
 // ─── Mounted routes ───────────────────────────────────────────────────────────
 app.use('/api/auth',     authRoutes);
 app.use('/api/missions', missionRoutes);
+app.use('/api/reports',  reportsRoutes);
 
 // ─── REST: Health + Model Info ────────────────────────────────────────────────
 app.get('/api/status', (req, res) => {

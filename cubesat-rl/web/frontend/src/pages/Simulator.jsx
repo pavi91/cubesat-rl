@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { io } from 'socket.io-client';
-import { Play, Square, RotateCcw, Brain, Bot, Shuffle } from 'lucide-react';
+import { Play, Square, RotateCcw, Brain, Bot, Shuffle, AlertTriangle } from 'lucide-react';
 import OrbitVisualizer from '../components/OrbitVisualizer';
 import TelemetryPanel from '../components/TelemetryPanel';
 import LiveCharts from '../components/LiveCharts';
+import { useAuth } from '../context/AuthContext';
 
 const BACKEND = 'http://localhost:3001';
 
@@ -14,6 +15,7 @@ const CONTROLLERS = [
 ];
 
 export default function Simulator() {
+  const { user } = useAuth();
   const [controller, setController] = useState('ppo');
   const [steps, setSteps] = useState(200);
   const [status, setStatus] = useState('idle'); // idle | running | done | error
@@ -42,8 +44,12 @@ export default function Simulator() {
     setHistory([]);
     setLatest(null);
     setSummary(null);
-    socketRef.current?.emit('start_simulation', { controller, steps });
-  }, [controller, steps]);
+    socketRef.current?.emit('start_simulation', {
+      controller,
+      steps,
+      userId: user?.id ?? null,
+    });
+  }, [controller, steps, user]);
 
   const handleStop = useCallback(() => {
     socketRef.current?.emit('stop_simulation');
@@ -175,6 +181,28 @@ export default function Simulator() {
 
         {/* ── Main Area ── */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          
+          {latest?.alerts?.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              {latest.alerts.map((alert, idx) => (
+                <div key={idx} style={{
+                  padding: '0.75rem 1rem',
+                  background: alert.severity === 'critical' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)',
+                  border: `1px solid ${alert.severity === 'critical' ? 'rgba(239,68,68,0.4)' : 'rgba(245,158,11,0.4)'}`,
+                  borderRadius: 'var(--radius-md)',
+                  display: 'flex', alignItems: 'center', gap: '0.75rem'
+                }}>
+                  <AlertTriangle size={16} color={alert.severity === 'critical' ? '#f87171' : '#fbbf24'} />
+                  <div>
+                    <strong style={{ color: alert.severity === 'critical' ? '#f87171' : '#fbbf24', fontSize: '0.8rem', display: 'block', marginBottom: '0.1rem' }}>
+                      {alert.type.replace('_', ' ')}
+                    </strong>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{alert.message}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           <OrbitVisualizer
             satellitePosition={satPos}
             satelliteColor={color}

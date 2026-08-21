@@ -8,11 +8,18 @@ const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET || 'cubesat-rl-secret-2026-change-in-prod';
 
 function requireAuth(req, res, next) {
+  let token;
   const auth = req.headers.authorization;
-  if (!auth || !auth.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing or malformed Authorization header' });
+  if (auth && auth.startsWith('Bearer ')) {
+    token = auth.slice(7);
+  } else if (req.query.token) {
+    token = req.query.token;
   }
-  const token = auth.slice(7);
+
+  if (!token) {
+    return res.status(401).json({ error: 'Missing or malformed Authorization header or token' });
+  }
+
   try {
     req.user = jwt.verify(token, JWT_SECRET);
     next();

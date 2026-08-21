@@ -10,16 +10,17 @@ import {
 const BACKEND = 'http://localhost:3001';
 
 const PRESETS = [
-  { name: 'LEO Standard',    target_alt_km: 450, min_alt_km: 400, fuel_budget_kg: 1.0, power_budget_wh: 10, steps: 200 },
-  { name: 'Low-Fuel Budget', target_alt_km: 420, min_alt_km: 390, fuel_budget_kg: 0.6, power_budget_wh: 8,  steps: 150 },
-  { name: 'High Endurance',  target_alt_km: 500, min_alt_km: 450, fuel_budget_kg: 1.5, power_budget_wh: 15, steps: 500 },
-  { name: 'Stress Test',     target_alt_km: 380, min_alt_km: 350, fuel_budget_kg: 0.5, power_budget_wh: 6,  steps: 300 },
+  { name: 'LEO Standard',    target_alt_km: 450, min_alt_km: 400, altitude_tolerance_km: 10, fuel_budget_kg: 1.0, max_fuel_consumption_kg: 0.5, power_budget_wh: 10, max_rms_altitude_error_km: 5.0, min_time_in_tolerance_percent: 95.0, steps: 200 },
+  { name: 'Low-Fuel Budget', target_alt_km: 420, min_alt_km: 390, altitude_tolerance_km: 15, fuel_budget_kg: 0.6, max_fuel_consumption_kg: 0.3, power_budget_wh: 8,  max_rms_altitude_error_km: 8.0, min_time_in_tolerance_percent: 90.0, steps: 150 },
+  { name: 'High Endurance',  target_alt_km: 500, min_alt_km: 450, altitude_tolerance_km: 5,  fuel_budget_kg: 1.5, max_fuel_consumption_kg: 1.0, power_budget_wh: 15, max_rms_altitude_error_km: 2.5, min_time_in_tolerance_percent: 99.0, steps: 500 },
+  { name: 'Stress Test',     target_alt_km: 380, min_alt_km: 350, altitude_tolerance_km: 20, fuel_budget_kg: 0.5, max_fuel_consumption_kg: 0.4, power_budget_wh: 6,  max_rms_altitude_error_km: 10.0, min_time_in_tolerance_percent: 85.0, steps: 300 },
 ];
 
 const EMPTY_FORM = {
   name: '', description: '',
-  target_alt_km: 450, min_alt_km: 400,
-  fuel_budget_kg: 1.0, power_budget_wh: 10,
+  target_alt_km: 450, min_alt_km: 400, altitude_tolerance_km: 10,
+  fuel_budget_kg: 1.0, max_fuel_consumption_kg: 0.5, power_budget_wh: 10,
+  max_rms_altitude_error_km: 5.0, min_time_in_tolerance_percent: 95.0,
   steps: 200, is_public: false,
 };
 
@@ -225,15 +226,48 @@ export default function MissionPlanner() {
               <SliderField id="target-alt" label="Target Altitude" value={form.target_alt_km}
                 onChange={v => setForm(f => ({...f, target_alt_km: v}))}
                 min={300} max={600} step={10} unit=" km" color="var(--cyan)" />
-              <SliderField id="min-alt" label="Minimum Altitude (Failure Threshold)" value={form.min_alt_km}
+              <SliderField id="min-alt" label="Minimum Safe Altitude" value={form.min_alt_km}
                 onChange={v => setForm(f => ({...f, min_alt_km: v}))}
                 min={200} max={550} step={10} unit=" km" color="var(--orange)" />
+              <SliderField id="alt-tolerance" label="Altitude Tolerance (±)" value={form.altitude_tolerance_km ?? 10}
+                onChange={v => setForm(f => ({...f, altitude_tolerance_km: v}))}
+                min={1} max={50} step={1} unit=" km" color="var(--cyan)" />
+              
+              <div style={{ marginTop: '0.5rem', marginBottom: '0.5rem', borderTop: '1px solid var(--border-subtle)' }} />
+
               <SliderField id="fuel-budget" label="Fuel Budget" value={form.fuel_budget_kg}
                 onChange={v => setForm(f => ({...f, fuel_budget_kg: v}))}
                 min={0.3} max={2.0} step={0.1} unit=" kg" color="var(--yellow)" />
+              <SliderField id="max-fuel-consumption" label="Max Fuel Consumption" value={form.max_fuel_consumption_kg ?? 0.5}
+                onChange={v => setForm(f => ({...f, max_fuel_consumption_kg: v}))}
+                min={0.1} max={form.fuel_budget_kg} step={0.1} unit=" kg" color="var(--yellow)" />
               <SliderField id="power-budget" label="Power Budget" value={form.power_budget_wh}
                 onChange={v => setForm(f => ({...f, power_budget_wh: v}))}
                 min={3} max={25} step={0.5} unit=" Wh" color="var(--purple)" />
+
+              <div style={{ marginTop: '0.5rem', marginBottom: '0.5rem', borderTop: '1px solid var(--border-subtle)' }} />
+
+              <div style={{ padding: '1rem', background: 'var(--bg-space)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+                <p style={{ fontSize: '0.7rem', fontFamily: 'var(--font-display)', letterSpacing: '0.05em', color: 'var(--cyan)', marginBottom: '1rem' }}>MISSION VERIFICATION REQUIREMENTS</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                  <div>
+                    <SliderField id="max-rms-error" label="Max RMS Altitude Error" value={form.max_rms_altitude_error_km ?? 5.0}
+                      onChange={v => setForm(f => ({...f, max_rms_altitude_error_km: v}))}
+                      min={0.5} max={25.0} step={0.5} unit=" km" color="var(--blue)" />
+                    <p style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>Maximum acceptable root-mean-square deviation from the mission's target altitude.</p>
+                  </div>
+                  
+                  <div>
+                    <SliderField id="min-time-percent" label="Time Within Altitude Tolerance" value={form.min_time_in_tolerance_percent ?? 95.0}
+                      onChange={v => setForm(f => ({...f, min_time_in_tolerance_percent: v}))}
+                      min={50} max={100} step={1} unit="%" color="var(--green)" />
+                    <p style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>Minimum percentage of simulation time the spacecraft must remain inside the configured altitude range.</p>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ marginTop: '0.5rem', marginBottom: '0.5rem', borderTop: '1px solid var(--border-subtle)' }} />
+
               <SliderField id="sim-steps" label="Simulation Steps" value={form.steps}
                 onChange={v => setForm(f => ({...f, steps: v}))}
                 min={50} max={2000} step={50} unit="" color="var(--green)" />

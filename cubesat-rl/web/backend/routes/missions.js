@@ -49,8 +49,24 @@ router.get('/', async (req, res) => {
 
 // POST /api/missions
 router.post('/', async (req, res) => {
-  const { name, description, target_alt_km, min_alt_km, fuel_budget_kg, power_budget_wh, steps, is_public } = req.body;
+  const { 
+    name, description, target_alt_km, min_alt_km, altitude_tolerance_km,
+    fuel_budget_kg, max_fuel_consumption_kg, power_budget_wh, 
+    max_rms_altitude_error_km, min_time_in_tolerance_percent, steps, is_public 
+  } = req.body;
+
   if (!name) return res.status(400).json({ error: 'Mission name is required' });
+
+  // Backend validation (Priority 1)
+  if (target_alt_km <= 0) return res.status(400).json({ error: 'Target altitude must be > 0' });
+  if (min_alt_km < 0) return res.status(400).json({ error: 'Minimum safe altitude must be >= 0' });
+  if (altitude_tolerance_km < 0) return res.status(400).json({ error: 'Altitude tolerance must be >= 0' });
+  if (fuel_budget_kg <= 0) return res.status(400).json({ error: 'Fuel budget must be > 0' });
+  if (max_fuel_consumption_kg < 0) return res.status(400).json({ error: 'Maximum fuel consumption must be >= 0' });
+  if (max_fuel_consumption_kg > fuel_budget_kg) return res.status(400).json({ error: 'Maximum allowed fuel consumption cannot exceed mission fuel budget.' });
+  if (max_rms_altitude_error_km < 0) return res.status(400).json({ error: 'Maximum RMS altitude error must be >= 0' });
+  if (min_time_in_tolerance_percent < 0 || min_time_in_tolerance_percent > 100) return res.status(400).json({ error: 'Minimum time percentage must be between 0 and 100' });
+
   try {
     const result = await callDB([
       '--action', 'create_mission',
@@ -59,8 +75,12 @@ router.post('/', async (req, res) => {
       '--description',     description || '',
       '--target_alt_km',   String(target_alt_km  ?? 450),
       '--min_alt_km',      String(min_alt_km     ?? 400),
+      '--altitude_tolerance_km', String(altitude_tolerance_km ?? 10.0),
       '--fuel_budget_kg',  String(fuel_budget_kg ?? 1.0),
+      '--max_fuel_consumption_kg', String(max_fuel_consumption_kg ?? 0.5),
       '--power_budget_wh', String(power_budget_wh ?? 10.0),
+      '--max_rms_altitude_error_km', String(max_rms_altitude_error_km ?? 5.0),
+      '--min_time_in_tolerance_percent', String(min_time_in_tolerance_percent ?? 95.0),
       '--steps',           String(steps           ?? 200),
       '--is_public',       is_public ? '1' : '0',
     ]);
@@ -89,6 +109,21 @@ router.get('/:id', async (req, res) => {
 
 // PUT /api/missions/:id
 router.put('/:id', async (req, res) => {
+  const { target_alt_km, min_alt_km, altitude_tolerance_km, fuel_budget_kg, max_fuel_consumption_kg, max_rms_altitude_error_km, min_time_in_tolerance_percent } = req.body;
+
+  if (target_alt_km !== undefined && target_alt_km <= 0) return res.status(400).json({ error: 'Target altitude must be > 0' });
+  if (min_alt_km !== undefined && min_alt_km < 0) return res.status(400).json({ error: 'Minimum safe altitude must be >= 0' });
+  if (altitude_tolerance_km !== undefined && altitude_tolerance_km < 0) return res.status(400).json({ error: 'Altitude tolerance must be >= 0' });
+  if (fuel_budget_kg !== undefined && fuel_budget_kg <= 0) return res.status(400).json({ error: 'Fuel budget must be > 0' });
+  if (max_fuel_consumption_kg !== undefined && max_fuel_consumption_kg < 0) return res.status(400).json({ error: 'Maximum fuel consumption must be >= 0' });
+  // We can't strictly validate max_fuel_consumption_kg > fuel_budget_kg here without fetching the existing DB row if one is missing, 
+  // but we can check if both are provided.
+  if (max_fuel_consumption_kg !== undefined && fuel_budget_kg !== undefined && max_fuel_consumption_kg > fuel_budget_kg) {
+    return res.status(400).json({ error: 'Maximum allowed fuel consumption cannot exceed mission fuel budget.' });
+  }
+  if (max_rms_altitude_error_km !== undefined && max_rms_altitude_error_km < 0) return res.status(400).json({ error: 'Maximum RMS altitude error must be >= 0' });
+  if (min_time_in_tolerance_percent !== undefined && (min_time_in_tolerance_percent < 0 || min_time_in_tolerance_percent > 100)) return res.status(400).json({ error: 'Minimum time percentage must be between 0 and 100' });
+
   try {
     const result = await callDB([
       '--action', 'update_mission',

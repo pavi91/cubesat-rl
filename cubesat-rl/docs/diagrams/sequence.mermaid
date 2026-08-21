@@ -1,0 +1,39 @@
+sequenceDiagram
+    participant U as User
+    participant F as React Frontend
+    participant N as Node Backend
+    participant P as Python Engine
+    participant V as Verification Engine
+    participant DB as SQLite Database
+
+    U->>F: Configures Mission Requirements
+    F->>N: POST /api/missions
+    N->>P: spawn(query_db.py, [create_mission_profile])
+    P->>DB: INSERT INTO mission_profiles
+    DB-->>P: Profile ID
+    P-->>N: JSON Response (Profile ID)
+    N-->>F: 201 Created
+    
+    U->>F: Clicks "Run Comparison"
+    F->>N: POST /api/compare
+    N->>P: spawn(run_comparison.py)
+    
+    rect rgb(200, 220, 240)
+        Note over P: Physical Simulation
+        P->>P: Run PPO Agent trajectory
+        P->>P: Run PID Baseline trajectory
+    end
+    
+    rect rgb(220, 240, 200)
+        Note over P,V: Engineering Verification
+        P->>V: verify(mission_profile, ppo_trajectory)
+        V-->>P: PPO Verification Results (PASS/FAIL metrics)
+        P->>V: verify(mission_profile, pid_trajectory)
+        V-->>P: PID Verification Results (PASS/FAIL metrics)
+        P->>P: generate_recommendation(ppo_verify, pid_verify)
+    end
+    
+    P->>DB: INSERT INTO comparisons (results, recommendations)
+    P-->>N: JSON (comparison ID, metrics, recommendations)
+    N-->>F: JSON Response
+    F-->>U: Renders side-by-side tables and verdicts
